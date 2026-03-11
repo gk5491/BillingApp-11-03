@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { journalEntriesApi } from "@/lib/api";
 import { StatusBadge } from "@/components/StatusBadge";
+import { formatCurrency, normalizeJournalLines } from "./accounting-utils";
 
 export default function DayBookPage() {
   const { data: entries = [], isLoading } = useQuery({ queryKey: ["journal_entries"], queryFn: journalEntriesApi.list });
@@ -25,16 +26,16 @@ export default function DayBookPage() {
                 <th className="text-left px-5 py-3 text-xs font-medium text-muted-foreground">Description</th>
               </tr></thead>
               <tbody>
-                {entries.flatMap((e: any) =>
-                  (e.journal_entry_lines || []).map((l: any, i: number) => (
-                    <tr key={`${e.id}-${i}`} className="border-b border-border last:border-0 hover:bg-muted/30">
-                      <td className="px-5 py-3 text-muted-foreground">{e.date}</td>
-                      <td className="px-5 py-3 font-medium text-primary">{e.document_number}</td>
-                      <td className="px-5 py-3"><StatusBadge status={e.journal_type} /></td>
-                      <td className="px-5 py-3 text-card-foreground">{l.accounts?.name || "—"}</td>
-                      <td className="px-5 py-3 text-right font-medium text-card-foreground">{Number(l.debit) > 0 ? `₹${Number(l.debit).toLocaleString()}` : "—"}</td>
-                      <td className="px-5 py-3 text-right font-medium text-card-foreground">{Number(l.credit) > 0 ? `₹${Number(l.credit).toLocaleString()}` : "—"}</td>
-                      <td className="px-5 py-3 text-muted-foreground">{l.description || e.description || "—"}</td>
+                {entries.flatMap((entry: any) =>
+                  normalizeJournalLines(entry).map((line: any, index: number) => (
+                    <tr key={`${entry.id}-${index}`} className="border-b border-border last:border-0 hover:bg-muted/30">
+                      <td className="px-5 py-3 text-muted-foreground">{entry.date}</td>
+                      <td className="px-5 py-3 font-medium text-primary">{entry.document_number}</td>
+                      <td className="px-5 py-3"><StatusBadge status={entry.journal_type} /></td>
+                      <td className="px-5 py-3 text-card-foreground">{line.account_name || line.accounts?.name || "-"}</td>
+                      <td className="px-5 py-3 text-right font-medium text-card-foreground">{Number(line.debit) > 0 ? formatCurrency(Number(line.debit || 0)) : "-"}</td>
+                      <td className="px-5 py-3 text-right font-medium text-card-foreground">{Number(line.credit) > 0 ? formatCurrency(Number(line.credit || 0)) : "-"}</td>
+                      <td className="px-5 py-3 text-muted-foreground">{line.description || entry.description || "-"}</td>
                     </tr>
                   ))
                 )}

@@ -100,7 +100,18 @@ function OrganizationSection() {
 
 // ===== Users =====
 function UsersSection() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: roles = [], isLoading } = useQuery({ queryKey: ["user_roles"], queryFn: userRolesApi.list });
+
+  const updateRoleMutation = useMutation({
+    mutationFn: ({ id, role }: { id: string; role: string }) => userRolesApi.update(id, role),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user_roles"] });
+      toast({ title: "User role updated" });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
 
   return (
     <div>
@@ -120,9 +131,21 @@ function UsersSection() {
             <tbody>
               {roles.map((r: any) => (
                 <tr key={r.id} className="border-b border-border last:border-0 hover:bg-muted/30">
-                  <td className="px-5 py-2.5 text-card-foreground">{(r as any).profiles?.display_name || "—"}</td>
-                  <td className="px-5 py-2.5 text-muted-foreground">{(r as any).profiles?.email || "—"}</td>
-                  <td className="px-5 py-2.5"><span className="px-2 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary capitalize">{r.role}</span></td>
+                  <td className="px-5 py-2.5 text-card-foreground">{r.display_name || r.email || "-"}</td>
+                  <td className="px-5 py-2.5 text-muted-foreground">{r.email || "-"}</td>
+                  <td className="px-5 py-2.5">
+                    <Select value={r.role} onValueChange={(value) => updateRoleMutation.mutate({ id: r.id, role: value })}>
+                      <SelectTrigger className="h-8 w-36">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="admin">Admin</SelectItem>
+                        <SelectItem value="manager">Manager</SelectItem>
+                        <SelectItem value="staff">Staff</SelectItem>
+                        <SelectItem value="viewer">Viewer</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -361,3 +384,4 @@ function SequenceRow({ seq, onSave }: { seq: any; onSave: (id: string, updates: 
     </tr>
   );
 }
+

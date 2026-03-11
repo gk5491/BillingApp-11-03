@@ -470,6 +470,7 @@ export const gstReturnsApi = {
 export const workflowsApi = {
   list: () => api.get<any[]>("/workflows"),
   create: (w: any) => api.post<any>("/workflows", w),
+  update: (id: string, updates: any) => api.put<any>(`/workflows/${id}`, updates),
   delete: (id: string) => api.delete(`/workflows/${id}`),
 };
 
@@ -481,15 +482,17 @@ export const bankAccountsApi = {
 
 // ===== POS =====
 export const posSessionsApi = {
-  list: () => api.get<any[]>("/pos-sessions"),
-  create: (s: any) => api.post<any>("/pos-sessions", s),
-  update: (id: string, updates: any) => api.put<any>(`/pos-sessions/${id}`, updates),
+  list: () => api.get<any[]>("/pos/sessions"),
+  create: (s: any) => api.post<any>("/pos/sessions", s),
+  update: (id: string, updates: any) => api.put<any>(`/pos/sessions/${id}/close`, updates),
 };
 
 export const posOrdersApi = {
-  list: () => api.get<any[]>("/pos-orders"),
-  create: (o: any) => api.post<any>("/pos-orders", o),
+  list: () => api.get<any[]>("/pos/orders"),
+  create: (o: any) => api.post<any>("/pos/orders", o),
 };
+
+
 
 
 

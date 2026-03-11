@@ -13,6 +13,7 @@ async function generateDocNumber(docType: string): Promise<string> {
   const defaults: Record<string, { prefix: string; padding: number }> = {
     sales_return: { prefix: "SR-", padding: 4 },
     purchase_return: { prefix: "PRTN-", padding: 4 },
+    journal_entry: { prefix: "JE-", padding: 4 },
   };
 
   let seqResult = await db.query`SELECT * FROM document_sequences WHERE document_type = ${docType}`;
@@ -581,6 +582,96 @@ router.get("/items/:id/stock", authenticate, async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== JOURNAL ENTRIES =====
+router.get("/journal-entries", authenticate, async (req, res) => {
+  try {
+    const entries = await db.query`
+      SELECT je.*
+      FROM journal_entries je
+      ORDER BY je.date DESC, je.created_at DESC
+    `.then(res => res.recordset);
+
+    for (const entry of entries) {
+      const lines = await db.query`
+        SELECT jel.*, a.name as account_name, a.code as account_code, a.account_type
+        FROM journal_entry_lines jel
+        LEFT JOIN accounts a ON jel.account_id = a.id
+        WHERE jel.journal_entry_id = ${entry.id}
+      `.then(res => res.recordset);
+      entry.journal_entry_lines = lines;
+    }
+
+    res.json(entries);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.get("/journal-entries/:id", authenticate, async (req, res) => {
+  try {
+    const entryResult = await db.query`SELECT * FROM journal_entries WHERE id = ${req.params.id}`;
+    const entry = entryResult.recordset[0];
+    if (!entry) { res.status(404).json({ error: "Not found" }); return; }
+
+    const lines = await db.query`
+      SELECT jel.*, a.name as account_name, a.code as account_code, a.account_type
+      FROM journal_entry_lines jel
+      LEFT JOIN accounts a ON jel.account_id = a.id
+      WHERE jel.journal_entry_id = ${req.params.id}
+    `.then(res => res.recordset);
+
+    res.json({ ...entry, journal_entry_lines: lines });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/journal-entries", authenticate, async (req: AuthRequest, res) => {
+  try {
+    const id = uuidv4();
+    const { date, description, journal_type, reference_id, reference_type, is_auto, lines } = req.body;
+    const document_number = await generateDocNumber('journal_entry');
+    const totalDebit = (lines || []).reduce((sum, line) => sum + Number(line.debit || 0), 0);
+    const totalCredit = (lines || []).reduce((sum, line) => sum + Number(line.credit || 0), 0);
+
+    if (!Array.isArray(lines) || lines.length < 2) {
+      res.status(400).json({ error: 'Journal entry requires at least two lines' });
+      return;
+    }
+
+    if (Math.abs(totalDebit - totalCredit) > 0.001) {
+      res.status(400).json({ error: 'Total debit must equal total credit' });
+      return;
+    }
+
+    await db.query`
+      INSERT INTO journal_entries (id, document_number, date, description, journal_type, reference_id, reference_type, is_auto, created_by, created_at)
+      VALUES (${id}, ${document_number}, ${date}, ${description || null}, ${journal_type || 'general'}, ${reference_id || null}, ${reference_type || null}, ${is_auto ?? false}, ${req.user!.id}, GETDATE())
+    `;
+
+    for (const line of lines) {
+      await db.query`
+        INSERT INTO journal_entry_lines (id, journal_entry_id, account_id, debit, credit, description)
+        VALUES (${uuidv4()}, ${id}, ${line.account_id}, ${Number(line.debit || 0)}, ${Number(line.credit || 0)}, ${line.description || null})
+      `;
+    }
+
+    const entryResult = await db.query`SELECT * FROM journal_entries WHERE id = ${id}`;
+    const created = entryResult.recordset[0];
+    const lineRows = await db.query`
+      SELECT jel.*, a.name as account_name, a.code as account_code, a.account_type
+      FROM journal_entry_lines jel
+      LEFT JOIN accounts a ON jel.account_id = a.id
+      WHERE jel.journal_entry_id = ${id}
+    `.then(res => res.recordset);
+
+    res.json({ ...created, journal_entry_lines: lineRows });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/journal-entries/:id", authenticate, async (req, res) => {
+  try {
+    await db.query`DELETE FROM journal_entry_lines WHERE journal_entry_id = ${req.params.id}`;
+    await db.query`DELETE FROM journal_entries WHERE id = ${req.params.id}`;
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
 // ===== TAX RATES =====
 router.get("/tax-rates", authenticate, async (req, res) => {
   try {
@@ -592,8 +683,23 @@ router.get("/tax-rates", authenticate, async (req, res) => {
 router.post("/tax-rates", authenticate, async (req, res) => {
   try {
     const id = uuidv4();
-    const { name, rate } = req.body;
-    await db.query`INSERT INTO tax_rates (id, name, rate, created_at, updated_at) VALUES (${id}, ${name}, ${rate}, GETDATE(), GETDATE())`;
+    const { name, rate, tax_type, cgst, sgst, igst, is_active, is_default } = req.body;
+    await db.query`
+      INSERT INTO tax_rates (id, name, rate, tax_type, cgst, sgst, igst, is_default, is_active, created_at, updated_at)
+      VALUES (
+        ${id},
+        ${name},
+        ${rate},
+        ${tax_type || 'GST'},
+        ${cgst ?? (Number(rate || 0) / 2)},
+        ${sgst ?? (Number(rate || 0) / 2)},
+        ${igst ?? Number(rate || 0)},
+        ${is_default ? 1 : 0},
+        ${is_active ?? true ? 1 : 0},
+        GETDATE(),
+        GETDATE()
+      )
+    `;
     const dataResult = await db.query`SELECT * FROM tax_rates WHERE id = ${id}`;
     res.json(dataResult.recordset[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -601,8 +707,20 @@ router.post("/tax-rates", authenticate, async (req, res) => {
 
 router.put("/tax-rates/:id", authenticate, async (req, res) => {
   try {
-    const { name, rate, tax_type, is_active } = req.body;
-    await db.query`UPDATE tax_rates SET name = COALESCE(${name}, name), rate = COALESCE(${rate}, rate), tax_type = COALESCE(${tax_type}, tax_type), is_active = COALESCE(${is_active}, is_active), updated_at = GETDATE() WHERE id = ${req.params.id}`;
+    const { name, rate, tax_type, cgst, sgst, igst, is_active, is_default } = req.body;
+    await db.query`
+      UPDATE tax_rates
+      SET name = COALESCE(${name}, name),
+          rate = COALESCE(${rate}, rate),
+          tax_type = COALESCE(${tax_type}, tax_type),
+          cgst = COALESCE(${cgst}, cgst),
+          sgst = COALESCE(${sgst}, sgst),
+          igst = COALESCE(${igst}, igst),
+          is_active = COALESCE(${is_active}, is_active),
+          is_default = COALESCE(${is_default}, is_default),
+          updated_at = GETDATE()
+      WHERE id = ${req.params.id}
+    `;
     const dataResult = await db.query`SELECT * FROM tax_rates WHERE id = ${req.params.id}`;
     res.json(dataResult.recordset[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -689,15 +807,65 @@ router.post("/gst-settings", authenticate, async (req, res) => {
   try {
     const existingResult = await db.query`SELECT TOP 1 * FROM gst_settings`;
     const existing = existingResult.recordset[0];
-    const { is_gst_registered, gstin, registration_type } = req.body;
+    const {
+      gstin,
+      legal_name,
+      trade_name,
+      state,
+      state_code,
+      is_composition,
+      reverse_charge_applicable,
+      einvoice_enabled,
+      eway_bill_enabled,
+    } = req.body;
     let data;
     if (existing) {
-      await db.query`UPDATE gst_settings SET is_gst_registered = ${is_gst_registered ? 1 : 0}, gstin = ${gstin || null}, registration_type = ${registration_type || null}, updated_at = GETDATE() WHERE id = ${existing.id}`;
+      await db.query`
+        UPDATE gst_settings
+        SET gstin = ${gstin || null},
+            legal_name = ${legal_name || null},
+            trade_name = ${trade_name || null},
+            state = ${state || null},
+            state_code = ${state_code || null},
+            is_composition = ${is_composition ? 1 : 0},
+            reverse_charge_applicable = ${reverse_charge_applicable ? 1 : 0},
+            einvoice_enabled = ${einvoice_enabled ? 1 : 0},
+            eway_bill_enabled = ${eway_bill_enabled ? 1 : 0},
+            updated_at = GETDATE()
+        WHERE id = ${existing.id}
+      `;
       const updatedResult = await db.query`SELECT * FROM gst_settings WHERE id = ${existing.id}`;
       data = updatedResult.recordset[0];
     } else {
       const id = uuidv4();
-      await db.query`INSERT INTO gst_settings (id, is_gst_registered, gstin, registration_type, created_at, updated_at) VALUES (${id}, ${is_gst_registered ? 1 : 0}, ${gstin || null}, ${registration_type || null}, GETDATE(), GETDATE())`;
+      await db.query`
+        INSERT INTO gst_settings (
+          id,
+          gstin,
+          legal_name,
+          trade_name,
+          state,
+          state_code,
+          is_composition,
+          reverse_charge_applicable,
+          einvoice_enabled,
+          eway_bill_enabled,
+          updated_at
+        )
+        VALUES (
+          ${id},
+          ${gstin || null},
+          ${legal_name || null},
+          ${trade_name || null},
+          ${state || null},
+          ${state_code || null},
+          ${is_composition ? 1 : 0},
+          ${reverse_charge_applicable ? 1 : 0},
+          ${einvoice_enabled ? 1 : 0},
+          ${eway_bill_enabled ? 1 : 0},
+          GETDATE()
+        )
+      `;
       const createdResult = await db.query`SELECT * FROM gst_settings WHERE id = ${id}`;
       data = createdResult.recordset[0];
     }
@@ -1004,7 +1172,13 @@ router.put("/pos/sessions/:id/close", authenticate, async (req, res) => {
 // ===== POS ORDERS =====
 router.get("/pos/orders", authenticate, async (req, res) => {
   try {
-    const data = await db.query`SELECT * FROM pos_orders ORDER BY created_at DESC`.then(res => res.recordset);
+    const data = await db.query`
+      SELECT po.*, c.name as customer_name, ps.opened_at as session_opened_at
+      FROM pos_orders po
+      LEFT JOIN customers c ON po.customer_id = c.id
+      LEFT JOIN pos_sessions ps ON po.session_id = ps.id
+      ORDER BY po.created_at DESC
+    `.then(res => res.recordset);
     res.json(data);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -2000,9 +2174,27 @@ router.post("/workflows", authenticate, async (req: AuthRequest, res) => {
     const id = uuidv4();
     const { name, trigger, conditions, actions, status } = req.body;
     await db.query`INSERT INTO workflows (id, name, [trigger], [conditions], [actions], status, created_at, updated_at) 
-      VALUES (${id}, ${name}, ${trigger}, ${JSON.stringify(conditions)}, ${JSON.stringify(actions)}, ${status || 'active'}, GETDATE(), GETDATE())`;
+      VALUES (${id}, ${name}, ${trigger}, ${JSON.stringify(conditions || [])}, ${JSON.stringify(actions || [])}, ${status || 'active'}, GETDATE(), GETDATE())`;
     const docResult = await db.query`SELECT * FROM workflows WHERE id = ${id}`;
     res.json(docResult.recordset[0]);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.put("/workflows/:id", authenticate, async (req, res) => {
+  try {
+    const { name, trigger, conditions, actions, status } = req.body;
+    await db.query`
+      UPDATE workflows
+      SET name = COALESCE(${name}, name),
+          [trigger] = COALESCE(${trigger}, [trigger]),
+          [conditions] = COALESCE(${conditions ? JSON.stringify(conditions) : null}, [conditions]),
+          [actions] = COALESCE(${actions ? JSON.stringify(actions) : null}, [actions]),
+          status = COALESCE(${status}, status),
+          updated_at = GETDATE()
+      WHERE id = ${req.params.id}
+    `;
+    const dataResult = await db.query`SELECT * FROM workflows WHERE id = ${req.params.id}`;
+    res.json(dataResult.recordset[0]);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2434,6 +2626,11 @@ router.delete("/delivery-challans/:id", authenticate, async (req, res) => {
 });
 
 export default router;
+
+
+
+
+
 
 
 

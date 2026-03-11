@@ -24,7 +24,7 @@ export default function POSOrdersPage() {
             orders.map((o: any) => (
               <TableRow key={o.id}>
                 <TableCell className="font-medium">{o.order_number || o.orderNumber}</TableCell>
-                <TableCell>{o.customers?.name || o.customerName || "Walk-in"}</TableCell>
+                <TableCell>{o.customer_name || o.customerName || "Walk-in"}</TableCell>
                 <TableCell>₹{Number(o.total).toLocaleString()}</TableCell>
                 <TableCell><StatusBadge status={o.status === "completed" ? "paid" : o.status} /></TableCell>
                 <TableCell>{new Date(o.created_at || o.createdAt).toLocaleString()}</TableCell>
@@ -36,3 +36,4 @@ export default function POSOrdersPage() {
     </div>
   );
 }
+
